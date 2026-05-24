@@ -1668,23 +1668,31 @@ function patchSessionStateBadges() {
     if (!session) return;
 
     const isRunning = sessionAliveState.has(sessionId);
+    const isBusy = sessionBusyState.get(sessionId) || false;
     const hasPR = session.lastAssistantHasPR === true;
     const { label, cls, tip } = deriveSessionState({
       isRunning,
       isActive: sessionId === activeSessionId,
       hasPR,
       isHistory: currentSidebarTab === 'history',
-      isBusy: sessionBusyState.get(sessionId) || false
+      isBusy
     });
 
-    // Keep the .running class in sync with sessionAliveState so the green
-    // "live" dot (CSS ::after) appears/disappears immediately. The fingerprint
+    // Keep the .running class in sync with sessionAliveState so the side
+    // dot (CSS ::after) appears/disappears immediately. The fingerprint
     // guard in renderSessionList() no longer triggers a full rebuild when
     // only the alive flag changes, so we must patch it here.
     if (isRunning && !el.classList.contains('running')) {
       el.classList.add('running');
     } else if (!isRunning && el.classList.contains('running')) {
       el.classList.remove('running');
+    }
+    // .busy mirrors WORKING (true) vs WAITING (false) so the side dot
+    // shows green when actively reasoning, yellow when idle.
+    if (isRunning && isBusy && !el.classList.contains('busy')) {
+      el.classList.add('busy');
+    } else if ((!isRunning || !isBusy) && el.classList.contains('busy')) {
+      el.classList.remove('busy');
     }
 
     const badge = el.querySelector('.session-state');
@@ -1712,20 +1720,26 @@ function patchSessionStateBadgeForId(sessionId) {
   if (!session) return;
 
   const isRunning = sessionAliveState.has(sessionId);
+  const isBusy = sessionBusyState.get(sessionId) || false;
   const hasPR = session.lastAssistantHasPR === true;
   const { label, cls, tip } = deriveSessionState({
     isRunning,
     isActive: sessionId === activeSessionId,
     hasPR,
     isHistory: currentSidebarTab === 'history',
-    isBusy: sessionBusyState.get(sessionId) || false
+    isBusy
   });
 
-  // See patchSessionStateBadges() for why .running is patched here too.
+  // See patchSessionStateBadges() for why .running and .busy are patched here too.
   if (isRunning && !el.classList.contains('running')) {
     el.classList.add('running');
   } else if (!isRunning && el.classList.contains('running')) {
     el.classList.remove('running');
+  }
+  if (isRunning && isBusy && !el.classList.contains('busy')) {
+    el.classList.add('busy');
+  } else if ((!isRunning || !isBusy) && el.classList.contains('busy')) {
+    el.classList.remove('busy');
   }
 
   const badge = el.querySelector('.session-state');
@@ -1801,7 +1815,13 @@ function createSessionItem(session, group, index) {
   el.className = 'session-item';
   el.dataset.sessionId = session.id;
   if (session.id === activeSessionId) el.classList.add('active');
-  if (sessionAliveState.has(session.id)) el.classList.add('running');
+  if (sessionAliveState.has(session.id)) {
+    el.classList.add('running');
+    // .busy mirrors the WORKING/WAITING badge state so the side dot is
+    // green when actively reasoning and yellow when idle. patchSessionStateBadges*
+    // keeps it in sync on subsequent updates.
+    if (sessionBusyState.get(session.id) === true) el.classList.add('busy');
+  }
   if (group) {
     el.classList.add('grouped');
   }

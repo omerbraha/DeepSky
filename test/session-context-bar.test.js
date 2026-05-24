@@ -384,6 +384,56 @@ describe('session switch is a single repaint (no double viewport sync)', () => {
   });
 });
 
+describe('side dot mirrors WORKING/WAITING status (green vs yellow), not just alive/dead', () => {
+  // Bug: the `.session-item.running::after` dot was always green when a
+  // session was alive, which made it meaningless — you couldn't tell from
+  // the dot alone whether an agent was actively reasoning or sitting idle.
+  // Now the dot reads from the same busy flag as the WORKING/WAITING badge:
+  //   - .running.busy   → green (Working — agent is reasoning)
+  //   - .running        → yellow (Waiting — agent is alive but idle)
+  //   - (not .running)  → no dot (session is dead / history)
+  // This makes the narrow-sidebar mode (where the badge text is clipped)
+  // actually useful.
+  it('CSS defaults .running::after to yellow and overrides to green only when .busy is also present', () => {
+    // Default running state = yellow (Waiting)
+    const yellowRule = css.match(/\.session-item\.running::after\s*\{[\s\S]*?\n\}/);
+    expect(yellowRule, '.session-item.running::after rule must be findable').not.toBeNull();
+    expect(yellowRule[0]).toMatch(/background\s*:\s*var\(--yellow\)/);
+    expect(yellowRule[0]).toMatch(/box-shadow\s*:[^;]*var\(--yellow\)/);
+
+    // .busy override = green (Working)
+    const greenRule = css.match(/\.session-item\.running\.busy::after\s*\{[\s\S]*?\n\}/);
+    expect(greenRule, '.session-item.running.busy::after override must be findable').not.toBeNull();
+    expect(greenRule[0]).toMatch(/background\s*:\s*var\(--green\)/);
+    expect(greenRule[0]).toMatch(/box-shadow\s*:[^;]*var\(--green\)/);
+  });
+
+  it('createSessionItem applies the .busy class on initial render when sessionBusyState is true', () => {
+    const m = renderer.match(/function createSessionItem\([\s\S]*?\n\}/);
+    expect(m, 'createSessionItem body must be findable').not.toBeNull();
+    const body = m[0];
+    // The .running class is applied when alive (pre-existing); now the .busy
+    // class should be applied alongside it when the busy flag is set.
+    expect(body).toMatch(/sessionBusyState\.get\(session\.id\)\s*===\s*true[\s\S]{0,40}classList\.add\(['"]busy['"]\)/);
+  });
+
+  it('patchSessionStateBadges keeps .busy in sync (add when running+busy, remove otherwise)', () => {
+    const m = renderer.match(/function patchSessionStateBadges\(\)[\s\S]*?\n\}/);
+    expect(m, 'patchSessionStateBadges body must be findable').not.toBeNull();
+    const body = m[0];
+    expect(body).toMatch(/isRunning\s*&&\s*isBusy\s*&&\s*!el\.classList\.contains\(['"]busy['"]\)/);
+    expect(body).toMatch(/\(\s*!isRunning\s*\|\|\s*!isBusy\s*\)\s*&&\s*el\.classList\.contains\(['"]busy['"]\)/);
+  });
+
+  it('patchSessionStateBadgeForId also patches .busy (per-id path used by debounce timer)', () => {
+    const m = renderer.match(/function patchSessionStateBadgeForId\([\s\S]*?\n\}/);
+    expect(m, 'patchSessionStateBadgeForId body must be findable').not.toBeNull();
+    const body = m[0];
+    expect(body).toMatch(/isRunning\s*&&\s*isBusy\s*&&\s*!el\.classList\.contains\(['"]busy['"]\)/);
+    expect(body).toMatch(/\(\s*!isRunning\s*\|\|\s*!isBusy\s*\)\s*&&\s*el\.classList\.contains\(['"]busy['"]\)/);
+  });
+});
+
 describe('per-session red unread-notification badge removed (was noisy / not actionable)', () => {
   // Bug: the sidebar showed a red dot with a number on every session card
   // for unread notifications. Notifications fire on every session exit, so

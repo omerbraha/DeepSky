@@ -514,6 +514,12 @@ body {
   color: color-mix(in srgb, var(--red) 120%, white);
 }
 
+/* Side indicator dot — only visible when the session is alive.
+   Color reflects realtime activity (matches the WORKING/WAITING badge):
+     - Working (.busy): green pulse
+     - Waiting (no .busy): yellow
+   This way the dot is meaningful even when the sidebar is narrowed and the
+   full status badge text is clipped. */
 .session-item.running::after {
   content: '';
   position: absolute;
@@ -521,8 +527,14 @@ body {
   right: 12px;
   width: 7px;
   height: 7px;
-  background: var(--green);
+  background: var(--yellow);
   border-radius: 50%;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--yellow) 40%, transparent);
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.session-item.running.busy::after {
+  background: var(--green);
   box-shadow: 0 0 6px color-mix(in srgb, var(--green) 40%, transparent);
 }
 
