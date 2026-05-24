@@ -44,6 +44,13 @@ let sessionListRenderSeq = 0;
 let activeSessionRenameId = null;
 let activeGroupRenameId = null;
 let pendingSessionListRender = false;
+// Fingerprint of the last rendered sidebar state. Used by renderSessionList() to
+// skip the destructive innerHTML='' + rebuild when nothing visible has changed —
+// pollSessionStatus runs every 3s and was forcing a full rebuild on every tick,
+// causing visible "blink" / mini re-renders. Status badge changes (Working /
+// Waiting / Pending PR / .running / active highlight) are still patched in-place
+// after the early-return below.
+let _lastSidebarFingerprint = null;
 let sidebarCollapsed = false;
 let sidebarHidden = false;
 let sidebarCollapsedBeforeHidden = false;
@@ -1489,6 +1496,37 @@ async function refreshSessionList() {
   if (!activeSessionId) emptyState.classList.remove('hidden');
 }
 
+// Compact, stable fingerprint of everything that affects the sidebar DOM
+// structure (NOT badges or active highlight — those are patched in place).
+// If two consecutive calls produce the same string, renderSessionList() can
+// safely skip the destructive innerHTML='' + rebuild.
+function computeSidebarFingerprint(displayed) {
+  const parts = [
+    currentSidebarTab,
+    searchQuery || '',
+    sidebarCollapsed ? '1' : '0',
+    typeof historyShowsAll !== 'undefined' && historyShowsAll ? 'a' : 'r',
+    Array.isArray(tabGroups)
+      ? tabGroups
+          .map(g =>
+            `${g.id}:${g.collapsed ? 1 : 0}:${g.color || ''}:${g.name || ''}:${(g.tabIds || []).join(',')}`
+          )
+          .join('|')
+      : '',
+    // displayed is already in render order; encode minimal per-item visual state
+    displayed
+      .map(s => {
+        const tags = Array.isArray(s.tags) ? s.tags.join(',') : '';
+        const res = Array.isArray(s.resources)
+          ? s.resources.map(r => `${r.type || ''}:${r.id || ''}`).join(',')
+          : '';
+        return `${s.id}|${s.title || ''}|${s.lastAssistantHasPR ? 1 : 0}|${tags}|${res}`;
+      })
+      .join(';'),
+  ];
+  return parts.join('§');
+}
+
 async function getAllValidSessionIds() {
   const sessions = await window.api.listSessions({ scope: 'all' });
   return new Set([
@@ -1639,6 +1677,16 @@ function patchSessionStateBadges() {
       isBusy: sessionBusyState.get(sessionId) || false
     });
 
+    // Keep the .running class in sync with sessionAliveState so the green
+    // "live" dot (CSS ::after) appears/disappears immediately. The fingerprint
+    // guard in renderSessionList() no longer triggers a full rebuild when
+    // only the alive flag changes, so we must patch it here.
+    if (isRunning && !el.classList.contains('running')) {
+      el.classList.add('running');
+    } else if (!isRunning && el.classList.contains('running')) {
+      el.classList.remove('running');
+    }
+
     const badge = el.querySelector('.session-state');
     if (badge && (badge.textContent !== label || !badge.classList.contains(cls))) {
       badge.className = 'session-state ' + cls;
@@ -1672,6 +1720,13 @@ function patchSessionStateBadgeForId(sessionId) {
     isHistory: currentSidebarTab === 'history',
     isBusy: sessionBusyState.get(sessionId) || false
   });
+
+  // See patchSessionStateBadges() for why .running is patched here too.
+  if (isRunning && !el.classList.contains('running')) {
+    el.classList.add('running');
+  } else if (!isRunning && el.classList.contains('running')) {
+    el.classList.remove('running');
+  }
 
   const badge = el.querySelector('.session-state');
   if (badge && (badge.textContent !== label || !badge.classList.contains(cls))) {
@@ -1902,6 +1957,24 @@ function renderSessionList() {
     displayed = displayed.filter(s => matchesSidebarMetadata(s, q));
   }
 
+  // Cheap-path: if visible state hasn't changed since last render, skip the
+  // destructive innerHTML='' + rebuild. Status badges and active highlight are
+  // still patched in place by patchSessionStateBadges()/patchActiveHighlight()
+  // (called from pollSessionStatus, switchToSession, onPtyData, etc.) so they
+  // remain real-time. Only triggered when the sidebar has already been rendered
+  // at least once and the DOM is non-empty.
+  const fingerprint = computeSidebarFingerprint(displayed);
+  if (
+    _lastSidebarFingerprint !== null &&
+    fingerprint === _lastSidebarFingerprint &&
+    sessionList.children.length > 0
+  ) {
+    try { patchActiveHighlight && patchActiveHighlight(); } catch (_) { /* noop */ }
+    try { patchSessionStateBadges && patchSessionStateBadges(); } catch (_) { /* noop */ }
+    return;
+  }
+  _lastSidebarFingerprint = fingerprint;
+
   sessionList.innerHTML = '';
   appendHistoryScopeNotice();
 
@@ -2004,24 +2077,14 @@ function renderSessionList() {
     }
   }
 
-  window.api.getNotifications().then(notifications => {
-    if (renderSeq !== sessionListRenderSeq) return;
-    sessionList.querySelectorAll('.session-item').forEach(el => {
-      const sessionId = el.dataset.sessionId;
-      if (!sessionId) return;
-      const unread = notifications.filter(n => !n.read && n.sessionId === sessionId).length;
-      if (unread > 0) {
-        const badge = document.createElement('span');
-        badge.className = 'session-notification-badge';
-        badge.textContent = unread;
-        const titleEl = el.querySelector('.session-title');
-        if (titleEl) {
-          titleEl.querySelector('.session-notification-badge')?.remove();
-          titleEl.appendChild(badge);
-        }
-      }
-    });
-  });
+  // NOTE: per-session unread notification badge was removed (it was noisy —
+  // every session-exit added a permanent red counter that stayed until the
+  // user manually opened the notification panel and clicked "mark all read").
+  // The global notification badge on the gear icon still tracks total unread,
+  // and the notification panel still has full per-session history.
+  // Keep `renderSeq` reference so the variable is intentionally consumed if
+  // future async work needs to be guarded against stale renders.
+  void renderSeq;
 }
 
 function startRenameSession(sessionId, titleEl) {
@@ -2399,7 +2462,11 @@ function switchToSession(sessionId) {
       entry.fitAddon.fit();
       entry.terminal.focus();
       window.api.resizePty(currentId, entry.terminal.cols, entry.terminal.rows);
-      syncTerminalViewport(currentId);
+      // Single viewport sync — previously we ran syncTerminalViewport()
+      // synchronously here AND scheduled another one 20ms later, which caused
+      // a visible double-paint flicker on session switch. The scheduled one
+      // handles everything (search refresh, scroll position) and runs in the
+      // next animation frame so the user only sees one repaint.
       scheduleTerminalViewportSync(currentId, { refreshSearch: true });
       if (!sessionSearch.classList.contains('hidden')) refreshSessionSearch(true);
     });

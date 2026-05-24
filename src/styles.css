@@ -1017,7 +1017,15 @@ body {
   display: block;
 }
 
-/* Session info bar — always visible below the terminal */
+/* Session info bar — always visible below the terminal.
+   IMPORTANT: this MUST be a fixed height (not min-height). The copy
+   button is 22px tall, the text content is ~16px tall, so the bar's
+   *actual* height jumps between 28px (empty) and ~32px (populated) if
+   we use min-height. fitAddon.fit() measures the terminal container
+   once on session switch — if the bar grows after that measurement,
+   the bottom ~4px of the terminal viewport is hidden behind the bar
+   and the user can't scroll to the very last row. Pinning the bar
+   height to 32px keeps fit() stable. */
 .terminal-prompt-ghost {
   display: flex;
   align-items: center;
@@ -1037,7 +1045,8 @@ body {
     inset 0 1px 0 color-mix(in srgb, var(--accent) 14%, transparent),
     0 -1px 0 color-mix(in srgb, var(--bg-overlay) 30%, transparent);
   flex-shrink: 0;
-  min-height: 28px;
+  height: 32px;
+  box-sizing: border-box;
   overflow: hidden;
 }
 
@@ -1252,8 +1261,7 @@ body {
 }
 
 #sidebar.collapsed .session-item .session-close,
-#sidebar.collapsed .session-item .session-delete,
-#sidebar.collapsed .session-item .session-notification-badge {
+#sidebar.collapsed .session-item .session-delete {
   display: none !important;
 }
 
@@ -2316,23 +2324,6 @@ body {
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 1px;
-}
-
-/* Session badge in sidebar */
-.session-notification-badge {
-  background: var(--red, #f38ba8);
-  color: var(--bg-overlay);
-  font-size: 10px;
-  font-weight: 700;
-  min-width: 16px;
-  height: 16px;
-  border-radius: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 4px;
-  margin-left: auto;
-  flex-shrink: 0;
 }
 
 /* Toast notifications */

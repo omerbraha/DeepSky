@@ -283,3 +283,125 @@ describe('Pending PR fires only for the latest assistant.message', () => {
     expect(renderer).not.toMatch(/resources\.some\(r\s*=>\s*r\.type\s*===\s*['"]pr['"]\s*&&/);
   });
 });
+
+describe('SESSION CONTEXT bar has a fixed (not min-) height so fit() stays correct', () => {
+  // Bug: when the bar was `min-height: 28px` it grew from 28px to ~32px when
+  // populated with a prompt + the 22px copy button. fitAddon.fit() runs on
+  // session switch BEFORE scheduleSessionPromptGhostRefresh populates the
+  // bar — so the terminal viewport was computed against a 28px bar but the
+  // actual rendered bar took ~32px, hiding the bottom row(s) of output
+  // behind it. The user could not scroll to the very end of an agent reply.
+  it('css pins .terminal-prompt-ghost to a fixed height (not min-height)', () => {
+    const m = css.match(/\.terminal-prompt-ghost\s*\{[\s\S]*?\n\}/);
+    expect(m, '.terminal-prompt-ghost rule must be findable').not.toBeNull();
+    const body = m[0];
+    expect(body, '.terminal-prompt-ghost must not use min-height (it grows when populated, breaking fit())').not.toMatch(/min-height\s*:/);
+    expect(body).toMatch(/\bheight\s*:\s*32px\b/);
+    // box-sizing: border-box keeps the 32px inclusive of padding so the
+    // total layout footprint matches what fit() measured.
+    expect(body).toMatch(/box-sizing\s*:\s*border-box/);
+  });
+});
+
+describe('sidebar render skips destructive rebuild when nothing visible changed (anti-flicker)', () => {
+  // Bug: pollSessionStatus runs every 3s and called refreshSessionList →
+  // scheduleRenderSessionList → renderSessionList which did
+  // `sessionList.innerHTML = ''` and rebuilt every card from scratch. The
+  // result was a visible sidebar "blink" every 3 seconds. Now renderSessionList
+  // computes a fingerprint of the visible state and short-circuits when it
+  // matches the last render. Status badges + .running + active highlight are
+  // still patched in place so they stay real-time.
+  it('renderer declares a sidebar fingerprint cache var', () => {
+    expect(renderer).toMatch(/let\s+_lastSidebarFingerprint\s*=\s*null/);
+  });
+
+  it('computeSidebarFingerprint depends on tab + search + sidebarCollapsed + groups + per-session visual state', () => {
+    const m = renderer.match(/function computeSidebarFingerprint\([\s\S]*?\n\}/);
+    expect(m, 'computeSidebarFingerprint body must be findable').not.toBeNull();
+    const body = m[0];
+    expect(body).toMatch(/currentSidebarTab\b/);
+    expect(body).toMatch(/searchQuery\b/);
+    expect(body).toMatch(/sidebarCollapsed\b/);
+    expect(body).toMatch(/historyShowsAll\b/);
+    expect(body).toMatch(/tabGroups\b/);
+    // per-item: id, title, lastAssistantHasPR (Pending PR badge), tags, resources
+    expect(body).toMatch(/s\.id\b/);
+    expect(body).toMatch(/s\.title\b/);
+    expect(body).toMatch(/s\.lastAssistantHasPR\b/);
+    expect(body).toMatch(/s\.tags\b/);
+    expect(body).toMatch(/s\.resources\b/);
+  });
+
+  it('renderSessionList short-circuits when the fingerprint is unchanged, but still patches badges + active highlight', () => {
+    const m = renderer.match(/function renderSessionList\([\s\S]*?sessionList\.innerHTML\s*=\s*['"]['"]/);
+    expect(m, 'renderSessionList early-return + clear-line must be findable').not.toBeNull();
+    const body = m[0];
+    // Compute the fingerprint after `displayed` is built
+    expect(body).toMatch(/computeSidebarFingerprint\(displayed\)/);
+    // Compare against the cached value
+    expect(body).toMatch(/_lastSidebarFingerprint\b/);
+    // The short-circuit branch must still patch in-place so status stays
+    // real-time even when we skip the rebuild.
+    expect(body).toMatch(/patchActiveHighlight/);
+    expect(body).toMatch(/patchSessionStateBadges/);
+  });
+
+  it('patchSessionStateBadges keeps the .running class in sync (since the rebuild path is now skipped on aliveness-only changes)', () => {
+    const m = renderer.match(/function patchSessionStateBadges\(\)[\s\S]*?\n\}/);
+    expect(m, 'patchSessionStateBadges body must be findable').not.toBeNull();
+    const body = m[0];
+    // Must add .running when isRunning is true and the class is missing
+    expect(body).toMatch(/isRunning\s*&&\s*!el\.classList\.contains\(['"]running['"]\)/);
+    // Must remove .running when isRunning is false
+    expect(body).toMatch(/!isRunning\s*&&\s*el\.classList\.contains\(['"]running['"]\)/);
+  });
+
+  it('patchSessionStateBadgeForId also patches .running (same reasoning, per-id path)', () => {
+    const m = renderer.match(/function patchSessionStateBadgeForId\([\s\S]*?\n\}/);
+    expect(m, 'patchSessionStateBadgeForId body must be findable').not.toBeNull();
+    const body = m[0];
+    expect(body).toMatch(/isRunning\s*&&\s*!el\.classList\.contains\(['"]running['"]\)/);
+    expect(body).toMatch(/!isRunning\s*&&\s*el\.classList\.contains\(['"]running['"]\)/);
+  });
+});
+
+describe('session switch is a single repaint (no double viewport sync)', () => {
+  // Bug: switchToSession ran syncTerminalViewport(currentId) AND
+  // scheduleTerminalViewportSync(currentId, ...) back-to-back. The first ran
+  // immediately, the second ran ~20ms later in a queued rAF, producing a
+  // visible double-paint flicker on every session switch (xterm canvas blink,
+  // scrollbar jump, input box twitch). Keep only the scheduled one — it
+  // already handles refreshSearch and runs in the next frame so the user
+  // sees a single repaint.
+  it('switchToSession does NOT call syncTerminalViewport synchronously alongside scheduleTerminalViewportSync', () => {
+    const m = renderer.match(/function switchToSession\(sessionId\)[\s\S]*?\n\}/);
+    expect(m, 'switchToSession body must be findable').not.toBeNull();
+    const body = m[0];
+    // The scheduled sync stays — that's the one repaint we want.
+    expect(body).toMatch(/scheduleTerminalViewportSync\(currentId,\s*\{\s*refreshSearch:\s*true\s*\}\)/);
+    // The redundant synchronous call must be gone.
+    expect(body).not.toMatch(/^\s*syncTerminalViewport\(currentId\)\s*;/m);
+  });
+});
+
+describe('per-session red unread-notification badge removed (was noisy / not actionable)', () => {
+  // Bug: the sidebar showed a red dot with a number on every session card
+  // for unread notifications. Notifications fire on every session exit, so
+  // the badge accumulated permanently until the user opened the bell menu
+  // and clicked "mark all read". The global notification badge on the gear
+  // icon already shows total unread, so the per-session badge was pure
+  // duplication and noise.
+  it('renderSessionList no longer enriches cards with .session-notification-badge', () => {
+    expect(renderer).not.toMatch(/className\s*=\s*['"]session-notification-badge['"]/);
+    expect(renderer).not.toMatch(/\.session-notification-badge/);
+  });
+
+  it('CSS rule for .session-notification-badge is removed', () => {
+    expect(css).not.toMatch(/\.session-notification-badge\s*\{/);
+  });
+
+  it('the collapsed-sidebar hide rule for the badge is also cleaned up', () => {
+    expect(css).not.toMatch(/#sidebar\.collapsed[\s\S]*?\.session-notification-badge/);
+  });
+});
+
